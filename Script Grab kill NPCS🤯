@@ -1,0 +1,265 @@
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+
+local BLOOD_ASSET = "rbxassetid://5069307706"
+local NECK_SNAP_ID = "rbxassetid://114303647099968"
+local GRAB_ANIM_ID = "rbxassetid://243663079"
+
+local CODE_ACTIONS = {
+    dismantle = "https://raw.githubusercontent.com/GUI-Offical/TestFile-Broken/refs/heads/main/Protected_8925751398564838.lua.txt",
+    mega = "https://raw.githubusercontent.com/GUI-Offical/TestFile-Broken/refs/heads/main/random.lua",
+}
+
+local function isPlayerCharacter(model)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character == model then return true end
+    end
+    return false
+end
+
+local function setModelCollisions(model, canCollide)
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function() d.CanCollide = canCollide end)
+        end
+    end
+end
+
+local bloodTemplateType, bloodEmitterTemplate, bloodModelTemplate
+local function preloadBlood()
+    local ok, objects = pcall(function() return game:GetObjects(BLOOD_ASSET) end)
+    if not ok or not objects or #objects == 0 then return end
+    local root = objects[1]
+    local foundEmitter
+    for _, d in ipairs(root:GetDescendants()) do
+        if d:IsA("ParticleEmitter") then foundEmitter = d break end
+    end
+    if foundEmitter then
+        bloodEmitterTemplate = foundEmitter:Clone()
+        bloodTemplateType = "emitter"
+    else
+        for _, p in ipairs(root:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false p.Massless = true end
+        end
+        root.Parent = nil
+        bloodModelTemplate = root
+        bloodTemplateType = "model"
+    end
+end
+
+local function createGrabTool(useBlood)
+    local tool = Instance.new("Tool")
+    tool.Name = "Grab"
+    tool.RequiresHandle = false
+
+    local grabAnim = Instance.new("Animation"); grabAnim.AnimationId = GRAB_ANIM_ID
+
+    local busy = false
+
+    tool.Activated:Connect(function()
+        if busy then return end
+        busy = true
+
+        local character = player.Character or player.CharacterAdded:Wait()
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then busy = false return end
+
+        local mouse = player:GetMouse()
+        local target = mouse.Target
+        if not target or not target.Parent then busy = false return end
+
+        local model = target:FindFirstAncestorOfClass("Model")
+        if not model then busy = false return end
+
+        if isPlayerCharacter(model) then
+            busy = false
+            return
+        end
+
+        local targetHum = model:FindFirstChildOfClass("Humanoid")
+        local targetHead = model:FindFirstChild("Head")
+        if not targetHum or not targetHead then busy = false return end
+        if targetHum.Health <= 0 then busy = false return end
+
+        local charRoot = character:FindFirstChild("HumanoidRootPart")
+        if not charRoot then busy = false return end
+        if (charRoot.Position - targetHead.Position).Magnitude > 20 then busy = false return end
+
+        local oldWalk, oldJump = humanoid.WalkSpeed, humanoid.JumpPower
+        humanoid.WalkSpeed = 0
+        humanoid.JumpPower = 0
+
+        local grabTrack = humanoid:LoadAnimation(grabAnim)
+        grabTrack:Play()
+        grabTrack:AdjustSpeed(0.8)
+        task.spawn(function()
+            task.wait(math.max(0, grabTrack.Length / 0.8 - 0.3))
+            grabTrack:AdjustSpeed(0)
+        end)
+
+        local bp = Instance.new("BodyPosition")
+        bp.MaxForce = Vector3.new(300000,300000,300000)
+        bp.P = 9000
+        bp.D = 300
+        bp.Parent = targetHead
+
+        local bg = Instance.new("BodyGyro")
+        bg.MaxTorque = Vector3.new(300000,300000,300000)
+        bg.P = 8000
+        bg.D = 200
+        bg.Parent = targetHead
+
+        setModelCollisions(model, false)
+
+        local rightArm = character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm")
+        local dragging = true
+        task.spawn(function()
+            while dragging and targetHum.Health > 0 do
+                if not rightArm or not targetHead then break end
+                local forwardDir = charRoot.CFrame.LookVector
+                local armTip = rightArm.Position + (forwardDir * 1.05) + Vector3.new(0, 1, 0)
+                bp.Position = armTip
+                bg.CFrame = CFrame.new(targetHead.Position, Vector3.new(charRoot.Position.X, targetHead.Position.Y, charRoot.Position.Z))
+                task.wait(0.05)
+            end
+        end)
+
+        -- ✅ AQUI: O NPC FICA TREMENDO ATÉ MORRER, sem matar de uma vez
+        local shakeStart = tick()
+        task.spawn(function()
+            while tick() - shakeStart < 3 and targetHum.Health > 0 do
+                targetHum.Health = math.max(0, targetHum.Health - 1) -- Perde vida devagar
+                if targetHead then
+                    targetHead.CFrame *= CFrame.Angles(
+                        math.rad(math.random(-12,12)),
+                        math.rad(math.random(-12,12)),
+                        math.rad(math.random(-12,12))
+                    )
+                end
+                task.wait(0.05)
+            end
+            if targetHum.Health > 0 then targetHum.Health = 0 end
+        end)
+
+        repeat task.wait() until targetHum.Health <= 0
+
+        if targetHead and targetHead.Parent then
+            local snap = Instance.new("Sound")
+            snap.SoundId = NECK_SNAP_ID
+            snap.Volume = 1
+            snap.Parent = targetHead
+            pcall(function() snap:Play() end)
+            Debris:AddItem(snap, 4)
+        end
+
+        if useBlood and targetHead and targetHead.Parent then
+            local existing = targetHead:FindFirstChild("___BloodAttachment")
+            if not existing then
+                local attach = Instance.new("Attachment")
+                attach.Name = "___BloodAttachment"
+                attach.Position = Vector3.new(0, -0.45, 0)
+                attach.Parent = targetHead
+
+                if bloodTemplateType == "emitter" and bloodEmitterTemplate then
+                    local e = bloodEmitterTemplate:Clone()
+                    e.Name = "BloodEmitter"
+                    e.Parent = attach
+                elseif bloodTemplateType == "model" and bloodModelTemplate then
+                    local cloneModel = bloodModelTemplate:Clone()
+                    for _, p in ipairs(cloneModel:GetDescendants()) do
+                        if p:IsA("BasePart") then
+                            p.CanCollide = false
+                            p.Massless = true
+                        end
+                    end
+                    cloneModel.Parent = model
+                    local primary = cloneModel.PrimaryPart or cloneModel:FindFirstChildWhichIsA("BasePart")
+                    if primary then
+                        primary.CFrame = targetHead.CFrame * CFrame.new(0, -0.45, 0)
+                        local weld = Instance.new("WeldConstraint")
+                        weld.Part0 = primary
+                        weld.Part1 = targetHead
+                        weld.Parent = primary
+                    end
+                end
+            end
+        end
+
+        dragging = false
+        grabTrack:AdjustSpeed(0.5)
+        task.wait(0.25)
+        grabTrack:Stop()
+
+        -- ❌ REMOVIDO: Todo o sistema de arremesso/jogar o NPC longe
+        if bp and bp.Parent then bp:Destroy() end
+        if bg and bg.Parent then bg:Destroy() end
+        task.delay(0.2, function() if model and model.Parent then setModelCollisions(model, true) end end)
+        humanoid.WalkSpeed = oldWalk
+        humanoid.JumpPower = oldJump
+        busy = false
+    end)
+
+    return tool
+end
+
+local claimedNPCs = {}
+
+local function claimNPC(model)
+    if not model:IsA("Model") then return end
+    if claimedNPCs[model] then return end
+    if isPlayerCharacter(model) then return end
+
+    local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+        or model:WaitForChild("Humanoid", 3)
+
+    if not humanoid then return end
+
+    claimedNPCs[model] = true
+
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part:SetAttribute("ClaimedBy", player.Name)
+            part:SetAttribute("Priority", 1)
+        end
+    end
+
+    model.AncestryChanged:Connect(function()
+        if not model:IsDescendantOf(Workspace) then
+            claimedNPCs[model] = nil
+        end
+    end)
+end
+
+local function startSequence()
+    preloadBlood()
+
+    task.spawn(function()
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model") then
+                task.spawn(claimNPC, obj)
+            end
+        end
+    end)
+
+    Workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("Model") then
+            task.spawn(claimNPC, obj)
+        end
+    end)
+
+    -- ✅ FERRAMENTA JÁ VAI DIRETO, SEM PERGUNTAS
+    local t = createGrabTool(true) -- Se não quiser sangue, mudar para "false"
+    t.Parent = player:WaitForChild("Backpack")
+end
+
+startSequence()
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.35)
+    startSequence()
+end)

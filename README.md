@@ -1,1 +1,0 @@
-# Script-Grab-kill-NPCS-
